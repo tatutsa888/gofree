@@ -1,0 +1,138 @@
+blueprint:
+  name: GoFree · Stop the pump when the tank runs low
+  description: >
+    Stops your Grundfos SCALA1 before it sucks the bottom of the tank, and restarts it once the
+    tank has refilled. A stop you make yourself is never undone. If the pump went into dry-run
+    alarm in the meantime (on many SCALA1 the automatic reset is off), the alarm is reset first.
+    Needs GoFree (https://github.com/tatutsa888/gofree) and a tank level sensor in %.
+  domain: automation
+  source_url: https://github.com/tatutsa888/gofree/blob/main/blueprints/automation/gofree/low_tank_cutoff.yaml
+  input:
+    level:
+      name: Tank level
+      description: A level sensor in % (filter it if it is noisy).
+      selector:
+        entity:
+          filter:
+            domain: sensor
+    pump:
+      name: Pump enabled switch
+      description: The GoFree "Pump enabled" switch.
+      selector:
+        entity:
+          filter:
+            domain: switch
+    memory:
+      name: Memory helper
+      description: >
+        An input_boolean that remembers the pump was stopped by this automation
+        (Settings › Devices & services › Helpers › Toggle).
+      selector:
+        entity:
+          filter:
+            domain: input_boolean
+    alarm:
+      name: Alarm sensor
+      description: The GoFree "Alarm" sensor.
+      selector:
+        entity:
+          filter:
+            domain: sensor
+    reset:
+      name: Reset alarms button
+      description: The GoFree "Reset alarms" button.
+      selector:
+        entity:
+          filter:
+            domain: button
+    stop_below:
+      name: Stop at or below (%)
+      default: 5
+      selector:
+        number: {min: 0, max: 50, unit_of_measurement: "%"}
+    restart_above:
+      name: Restart above (%)
+      default: 15
+      selector:
+        number: {min: 1, max: 100, unit_of_measurement: "%"}
+    notify:
+      name: Notify (optional)
+      description: Actions to run after a stop or a restart, e.g. a mobile notification.
+      default: []
+      selector:
+        action: {}
+
+mode: queued
+
+variables:
+  pump: !input pump
+  memory: !input memory
+
+triggers:
+  - trigger: numeric_state
+    entity_id: !input level
+    below: !input stop_below
+    for: {minutes: 10}
+    id: stop
+  - trigger: numeric_state
+    entity_id: !input level
+    above: !input restart_above
+    for: {minutes: 30}
+    id: restart
+  - trigger: state
+    entity_id: !input pump
+    to: "on"
+    id: manual
+
+actions:
+  - choose:
+      - conditions:
+          - condition: trigger
+            id: stop
+          - condition: state
+            entity_id: !input pump
+            state: "on"
+        sequence:
+          - action: input_boolean.turn_on
+            target: {entity_id: !input memory}
+          - action: switch.turn_off
+            target: {entity_id: !input pump}
+          - choose: []
+            default: !input notify
+      - conditions:
+          - condition: trigger
+            id: restart
+          - condition: or
+            conditions:
+              - condition: state
+                entity_id: !input memory
+                state: "on"
+              - condition: state
+                entity_id: !input alarm
+                state: DryRun
+        sequence:
+          - if:
+              - condition: state
+                entity_id: !input alarm
+                state: DryRun
+            then:
+              - action: button.press
+                target: {entity_id: !input reset}
+              - delay: {seconds: 40}
+          - if:
+              - condition: state
+                entity_id: !input pump
+                state: "off"
+            then:
+              - action: switch.turn_on
+                target: {entity_id: !input pump}
+          - action: input_boolean.turn_off
+            target: {entity_id: !input memory}
+          - choose: []
+            default: !input notify
+      - conditions:
+          - condition: trigger
+            id: manual
+        sequence:
+          - action: input_boolean.turn_off
+            target: {entity_id: !input memory}

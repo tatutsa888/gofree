@@ -1,0 +1,36 @@
+# Minimal GoFree device: an ESP32 within Bluetooth range of the pump (a few metres).
+# Flash it, then press the blue button on the pump. That's it.
+
+esphome:
+  name: gofree
+  friendly_name: SCALA1
+
+esp32:
+  board: esp32dev        # any ESP32 or ESP32-S3 board
+  framework:
+    type: esp-idf        # required
+
+logger:
+
+api:
+  encryption:
+    key: !secret api_key
+
+ota:
+  - platform: esphome
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+
+external_components:
+  - source: github://tatutsa888/gofree@v1.0.0
+    components: [gofree]
+
+packages:
+  gofree: github://tatutsa888/gofree/gofree.yaml@v1.0.0
+
+# Optional: rename entities, e.g.
+# substitutions:
+#   gofree_name_running: "Pump running"

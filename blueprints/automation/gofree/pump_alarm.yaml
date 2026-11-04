@@ -1,0 +1,64 @@
+blueprint:
+  name: GoFree · Tell me when the pump raises an alarm
+  description: >
+    Runs your notification when the Grundfos SCALA1 reports an alarm or a warning
+    (dry running, too many starts per hour, leak, overheating…). The plain-English
+    description is available as {{ description }} and the code as {{ code }}.
+    Needs GoFree (https://github.com/tatutsa888/gofree).
+  domain: automation
+  source_url: https://github.com/tatutsa888/gofree/blob/main/blueprints/automation/gofree/pump_alarm.yaml
+  input:
+    alarm:
+      name: Alarm sensor
+      selector:
+        entity:
+          filter:
+            domain: sensor
+    warning:
+      name: Warning sensor
+      selector:
+        entity:
+          filter:
+            domain: sensor
+    description_sensor:
+      name: Alarm description sensor
+      selector:
+        entity:
+          filter:
+            domain: sensor
+    none_value:
+      name: Value meaning "no alarm"
+      description: '"None" in English, "Aucune" / "Aucun" if you translated GoFree.'
+      default: None
+      selector:
+        text: {}
+    notify:
+      name: Notify
+      selector:
+        action: {}
+
+mode: queued
+
+variables:
+  description_sensor: !input description_sensor
+  none_value: !input none_value
+
+triggers:
+  - trigger: state
+    entity_id:
+      - !input alarm
+      - !input warning
+    for: {minutes: 1}
+
+conditions:
+  - condition: template
+    value_template: >
+      {{ trigger.to_state.state not in [none_value, 'None', 'Aucune', 'Aucun', 'unknown', 'unavailable']
+         and trigger.from_state is not none and trigger.from_state.state != trigger.to_state.state }}
+
+actions:
+  - variables:
+      code: "{{ trigger.to_state.state }}"
+      description: "{{ states(description_sensor) }}"
+  - choose: []
+    default: !input notify

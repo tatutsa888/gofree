@@ -1,0 +1,67 @@
+# GoFree en français : mêmes entités, noms et réglages traduits.
+
+esphome:
+  name: gofree
+  friendly_name: Surpresseur
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+logger:
+
+api:
+  encryption:
+    key: !secret api_key
+
+ota:
+  - platform: esphome
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+
+external_components:
+  - source: github://tatutsa888/gofree@v1.0.0
+    components: [gofree]
+
+packages:
+  gofree: github://tatutsa888/gofree/gofree.yaml@v1.0.0
+
+substitutions:
+  gofree_lang: "fr"
+  gofree_name_link: "Liaison pompe"
+  gofree_name_running: "En marche"
+  gofree_name_demand: "Demande d'eau"
+  gofree_name_pressure: "Pression détectée"
+  gofree_name_flow: "Débit détecté"
+  gofree_name_priming: "Amorçage en cours"
+  gofree_name_in_alarm: "En alarme"
+  gofree_name_ext_stop: "Arrêt par l'entrée externe"
+  gofree_name_available: "Disponible"
+  gofree_name_button: "Bouton d'appairage appuyé"
+  gofree_name_alarm: "Alarme"
+  gofree_name_warning: "Avertissement"
+  gofree_name_alarm_text: "Description de l'alarme"
+  gofree_name_adv: "Annonce Bluetooth"
+  gofree_name_dryrun_cfg: "Réglage marche à sec"
+  gofree_name_extin_cfg: "Réglage entrée externe"
+  gofree_name_seen: "Pompe repérée"
+  gofree_name_status_bytes: "Octets d'état"
+  gofree_name_alarm_code: "Code d'alarme"
+  gofree_name_active_alarms: "Alarmes actives"
+  gofree_name_active_warnings: "Avertissements actifs"
+  gofree_name_starts: "Démarrages"
+  gofree_name_starts_hour: "Démarrages dernière heure"
+  gofree_name_starts_24h: "Démarrages 24 h"
+  gofree_name_run_total: "Temps de marche total"
+  gofree_name_run_24h: "Temps de marche 24 h"
+  gofree_name_last_run: "Dernier cycle"
+  gofree_name_bt_switch: "Liaison Bluetooth"
+  gofree_name_enabled: "Pompe activée"
+  gofree_name_reset_alarm: "Acquitter les alarmes"
+  gofree_name_forget: "Oublier la pompe"
+  gofree_none_alarm: "Aucune"
+  gofree_none_warning: "Aucun"

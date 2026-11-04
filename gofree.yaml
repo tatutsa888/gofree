@@ -1,0 +1,478 @@
+# GoFree: your Grundfos SCALA1 in Home Assistant. No app, no cloud, just an ESP32.
+# https://github.com/tatutsa888/gofree · MIT · Not affiliated with or endorsed by Grundfos.
+#
+# Add to an ESP32 configuration (ESP-IDF framework), next to the `external_components` entry
+# shown in the README. Every entity name can be changed with a substitution.
+
+substitutions:
+  # Leave as is: GoFree finds the nearest SCALA1 and remembers it once you press its blue button.
+  # Set it only to force a given pump.
+  pump_mac: "00:00:00:00:00:00"
+  gofree_lang: "en"
+  # Entity names
+  gofree_name_link: "Pump link"
+  gofree_name_running: "Running"
+  gofree_name_demand: "Water demand"
+  gofree_name_pressure: "Pressure detected"
+  gofree_name_flow: "Flow detected"
+  gofree_name_priming: "Priming"
+  gofree_name_in_alarm: "In alarm"
+  gofree_name_ext_stop: "Stopped by external input"
+  gofree_name_available: "Available"
+  gofree_name_button: "Pairing button pressed"
+  gofree_name_alarm: "Alarm"
+  gofree_name_warning: "Warning"
+  gofree_name_alarm_text: "Alarm description"
+  gofree_name_adv: "Bluetooth advertisement"
+  gofree_name_dryrun_cfg: "Dry-run protection"
+  gofree_name_extin_cfg: "External input"
+  gofree_name_seen: "Pump found"
+  gofree_name_status_bytes: "Status bytes"
+  gofree_name_alarm_code: "Alarm code"
+  gofree_name_active_alarms: "Active alarms"
+  gofree_name_active_warnings: "Active warnings"
+  gofree_name_starts: "Starts"
+  gofree_name_starts_hour: "Starts last hour"
+  gofree_name_starts_24h: "Starts 24 h"
+  gofree_name_run_total: "Total running time"
+  gofree_name_run_24h: "Running time 24 h"
+  gofree_name_last_run: "Last cycle"
+  gofree_name_bt_switch: "Bluetooth link"
+  gofree_name_enabled: "Pump enabled"
+  gofree_name_reset_alarm: "Reset alarms"
+  gofree_name_forget: "Forget pump"
+  gofree_none_alarm: "None"
+  gofree_none_warning: "None"
+
+gofree:
+
+esphome:
+  on_boot:
+    priority: -100
+    then:
+      - lambda: |-
+          const uint64_t fixed = gofree::parse_mac("${pump_mac}");
+          if (fixed) id(gofree_addr) = fixed;
+          if (id(gofree_addr)) {
+            id(gofree_client)->set_address(id(gofree_addr));
+            ESP_LOGI(gofree::TAG, "Pump %s, waiting for it", id(gofree_client)->address_str());
+          } else {
+            ESP_LOGI(gofree::TAG, "No pump yet: press the blue button on your SCALA1");
+          }
+
+logger:
+  logs:
+    ble_client.automation: ERROR  # one warning per request while the pump is out of reach otherwise
+
+esp32_ble:
+  max_connections: 3
+
+# Pairing request, broadcast like the official app does (see docs/pairing.md).
+# The payload is set at runtime for the pump in range, and cleared once paired.
+esp32_ble_server:
+  manufacturer_data: [0x28, 0x03]
+
+esp32_ble_tracker:
+  scan_parameters:
+    active: true
+  on_ble_advertise:
+    - then:
+        - lambda: |-
+            const gofree::Advert *ap = nullptr;
+            gofree::Advert a;
+            for (auto &d : x.get_service_datas())
+              if (d.uuid == esp32_ble::ESPBTUUID::from_uint16(gofree::SERVICE)) { a = gofree::parse_advert(d.data); if (a.valid) ap = &a; }
+            if (ap == nullptr) return;
+            const uint64_t addr = x.address_uint64();
+            // Not adopted yet: target the pump in range, adopt it as soon as it accepts pairing.
+            if (id(gofree_addr) == 0) {
+              if (id(gofree_target) != a.id) {
+                id(gofree_target) = a.id;
+                const char *fam = gofree::family_name(a.family, a.type);
+                ESP_LOGI(gofree::TAG, "Found %s (%s), id %s: press its blue button", fam ? fam : "an unsupported Grundfos pump",
+                         x.address_str().c_str(), a.id);
+                esp32_ble::global_ble->advertising_set_manufacturer_data(gofree::pairing_request(a.id));
+              }
+              if (a.button() || gofree::is_bonded_u64(addr)) {
+                id(gofree_addr) = addr;
+                id(gofree_client)->set_address(addr);
+                id(gofree_client)->set_enabled(true);
+                ESP_LOGI(gofree::TAG, "Pump %s adopted", x.address_str().c_str());
+              }
+            }
+            if (addr != id(gofree_addr)) return;
+            id(gofree_target) = a.id;
+            id(gofree_button).publish_state(a.button());
+            // Pairing window open (blue button): connect now, the pump starts pairing by itself.
+            if (a.button() && !id(gofree_client)->enabled) {
+              ESP_LOGI(gofree::TAG, "Blue button pressed: connecting");
+              id(gofree_client)->set_enabled(true);
+            }
+            std::string raw;
+            for (auto &d : x.get_service_datas()) raw += format_hex_pretty(d.data);
+            if (raw != id(gofree_adv).state) id(gofree_adv).publish_state(raw);
+            const std::string seen = x.address_str() + " (" + std::to_string(x.get_rssi()) + " dBm)";
+            if (id(gofree_seen).state != seen) id(gofree_seen).publish_state(seen);
+
+script:
+  - id: gofree_read_settings
+    then:
+      - delay: 8s
+      - ble_client.ble_write:
+          id: gofree_client
+          service_uuid: fe5d
+          characteristic_uuid: 859cffd1-036e-432a-aa28-1a0085b87ba9
+          value: !lambda return gofree::read_obj(88, 114);
+      - delay: 2s
+      - ble_client.ble_write:
+          id: gofree_client
+          service_uuid: fe5d
+          characteristic_uuid: 859cffd1-036e-432a-aa28-1a0085b87ba9
+          value: !lambda return gofree::read_obj(82, 60);
+
+globals:
+  - id: gofree_addr
+    type: uint64_t
+    restore_value: true
+    initial_value: '0'
+  - id: gofree_target
+    type: std::string
+  - id: gofree_rx
+    type: std::vector<uint8_t>
+  - id: gofree_last_rx
+    type: uint32_t
+    initial_value: '0'
+
+ble_client:
+  - mac_address: ${pump_mac}
+    id: gofree_client
+    on_connect:
+      then:
+        - lambda: |-
+            if (gofree::is_bonded(id(gofree_client)->get_remote_bda())) {
+              // Paired pump: encrypt straight away, or it hangs up after about a second.
+              ESP_LOGI(gofree::TAG, "Connected, encrypting");
+              esp_ble_set_encryption(id(gofree_client)->get_remote_bda(), ESP_BLE_SEC_ENCRYPT);
+              esp32_ble::global_ble->advertising_set_manufacturer_data({});  // stop the pairing request
+              id(gofree_read_settings).execute();
+            } else {
+              // Not paired: do nothing, the pump starts pairing itself while its pairing window is open.
+              ESP_LOGW(gofree::TAG, "Not paired yet: press the blue button on the pump");
+              if (!id(gofree_target).empty())
+                esp32_ble::global_ble->advertising_set_manufacturer_data(gofree::pairing_request(id(gofree_target).c_str()));
+            }
+    on_disconnect:
+      then:
+        - lambda: id(gofree_rx).clear();
+
+sensor:
+  # GENI replies: reassembled from 20-byte notifications, then decoded by object type.
+  # Class 10 reply: 24 len F8 E7 0A <l> 00 <type hi> <type lo> <version> 00 00 <size> <data…> CRC
+  - platform: ble_client
+    type: characteristic
+    ble_client_id: gofree_client
+    name: "GENI raw"
+    internal: true
+    service_uuid: fe5d
+    characteristic_uuid: 859cffd1-036e-432a-aa28-1a0085b87ba9
+    notify: true
+    update_interval: never
+    lambda: |-
+      auto &b = id(gofree_rx);
+      if (!x.empty() && x[0] == 0x24) b.clear();
+      if (b.empty() && (x.empty() || x[0] != 0x24)) return NAN;
+      b.insert(b.end(), x.begin(), x.end());
+      if (b.size() < 2 || b.size() < (size_t) b[1] + 4) return NAN;
+      std::vector<uint8_t> f(b.begin(), b.begin() + b[1] + 4);
+      b.clear();
+      ESP_LOGD(gofree::TAG, "RX %s", format_hex_pretty(f).c_str());
+      if (gofree::crc(f.data() + 1, f.size() - 3) != gofree::u16(f, f.size() - 2)) {
+        ESP_LOGW(gofree::TAG, "Bad CRC, frame dropped");
+        return NAN;
+      }
+      id(gofree_last_rx) = millis();
+      if (!id(gofree_link).state) id(gofree_link).publish_state(true);
+      if (f.size() < 15 || f[4] != 0x0A) return NAN;
+      const uint16_t type = (f[7] << 8) | f[8];
+      const size_t d = 13, n = f[12];
+      if (f.size() < d + n + 2) return NAN;
+      const bool fr = std::string("${gofree_lang}") == "fr";
+
+      if (type == 420 && n >= 3) {            // pump status
+        const uint8_t s1 = f[d], s2 = f[d + 1];
+        id(gofree_available).publish_state(s1 & 0x01);
+        id(gofree_stopped_cmd).publish_state(s1 & 0x04);
+        id(gofree_ext_stop).publish_state(s1 & 0x08);
+        id(gofree_demand).publish_state(s1 & 0x40);
+        id(gofree_pressure).publish_state(s1 & 0x80);
+        id(gofree_flow).publish_state(s2 & 0x01);
+        id(gofree_running).publish_state(s2 & 0x02);
+        id(gofree_priming).publish_state(s2 & 0x04);
+        id(gofree_in_alarm).publish_state(s2 & 0x30);
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%02X %02X", s1, s2);
+        if (id(gofree_status_bytes).state != buf) id(gofree_status_bytes).publish_state(buf);
+      } else if (type == 266 && n >= 4) {     // fault status (6 bytes on the SCALA1)
+        const uint16_t warn = gofree::u16(f, d), alarm = gofree::u16(f, d + 2);
+        id(gofree_alarm).publish_state(alarm ? gofree::error_name(alarm) : "${gofree_none_alarm}");
+        id(gofree_warning).publish_state(warn ? gofree::error_name(warn) : "${gofree_none_warning}");
+        const uint16_t shown = alarm ? alarm : warn;
+        id(gofree_alarm_text).publish_state(shown ? gofree::error_text(shown) : "${gofree_none_alarm}");
+        id(gofree_alarm_code).publish_state(alarm);
+        id(gofree_active_alarms).publish_state(n >= 28 ? gofree::u16(f, d + 24) : (alarm ? 1 : 0));
+        id(gofree_active_warnings).publish_state(n >= 28 ? gofree::u16(f, d + 26) : (warn ? 1 : 0));
+      } else if (type == 248 && n >= 28) {    // operation history, pump 1
+        id(gofree_starts).publish_state(gofree::u32(f, d));
+        id(gofree_starts_hour).publish_state(gofree::u16(f, d + 4));
+        id(gofree_starts_24h).publish_state(gofree::u16(f, d + 6));
+        id(gofree_run_total).publish_state(gofree::u32(f, d + 8) / 3600.0f);
+        id(gofree_run_24h).publish_state(gofree::u32(f, d + 12) / 60.0f);
+        id(gofree_last_run).publish_state(gofree::u32(f, d + 16));
+      } else if (type == 408 && n >= 15) {    // dry-run protection settings
+        char buf[160];
+        if (fr)
+          snprintf(buf, sizeof(buf), "%s ; amorçage %us, normal %us, débit %us ; réarmement auto %s toutes les %us, %u essais",
+                   f[d] ? "activée" : "DÉSACTIVÉE", gofree::u16(f, d + 1), gofree::u16(f, d + 3), gofree::u16(f, d + 5),
+                   f[d + 7] ? "oui" : "non", gofree::u16(f, d + 8), f[d + 10]);
+        else
+          snprintf(buf, sizeof(buf), "%s; priming %us, normal %us, flow %us; auto reset %s every %us, %u attempts",
+                   f[d] ? "on" : "OFF", gofree::u16(f, d + 1), gofree::u16(f, d + 3), gofree::u16(f, d + 5),
+                   f[d + 7] ? "yes" : "no", gofree::u16(f, d + 8), f[d + 10]);
+        id(gofree_dryrun_cfg).publish_state(buf);
+      } else if (type == 413 && n >= 6) {     // external input settings
+        char buf[160];
+        const uint8_t bits = f[d];
+        if (fr)
+          snprintf(buf, sizeof(buf), "%s ; arrêt si contact %s ; délai %us ; redémarrage forcé %s",
+                   (bits & 0x01) ? "activée" : "désactivée", (bits & 0x02) ? "fermé" : "ouvert", gofree::u16(f, d + 1),
+                   (f[d + 3] & 0x01) ? "oui" : "non");
+        else
+          snprintf(buf, sizeof(buf), "%s; stops when contact is %s; delay %us; forced restart %s",
+                   (bits & 0x01) ? "on" : "off", (bits & 0x02) ? "closed" : "open", gofree::u16(f, d + 1),
+                   (f[d + 3] & 0x01) ? "yes" : "no");
+        id(gofree_extin_cfg).publish_state(buf);
+      } else {
+        ESP_LOGI(gofree::TAG, "Object type %u (%u bytes) not decoded: %s", type, (unsigned) n, format_hex_pretty(f).c_str());
+      }
+      return NAN;
+
+  - platform: template
+    id: gofree_alarm_code
+    name: "${gofree_name_alarm_code}"
+    entity_category: diagnostic
+    accuracy_decimals: 0
+  - platform: template
+    id: gofree_active_alarms
+    name: "${gofree_name_active_alarms}"
+    accuracy_decimals: 0
+    entity_category: diagnostic
+  - platform: template
+    id: gofree_active_warnings
+    name: "${gofree_name_active_warnings}"
+    accuracy_decimals: 0
+    entity_category: diagnostic
+  - platform: template
+    id: gofree_starts
+    name: "${gofree_name_starts}"
+    state_class: total_increasing
+    accuracy_decimals: 0
+    icon: mdi:counter
+  - platform: template
+    id: gofree_starts_hour
+    name: "${gofree_name_starts_hour}"
+    state_class: measurement
+    accuracy_decimals: 0
+    icon: mdi:counter
+  - platform: template
+    id: gofree_starts_24h
+    name: "${gofree_name_starts_24h}"
+    state_class: measurement
+    accuracy_decimals: 0
+    icon: mdi:counter
+  - platform: template
+    id: gofree_run_total
+    name: "${gofree_name_run_total}"
+    unit_of_measurement: h
+    device_class: duration
+    state_class: total_increasing
+    accuracy_decimals: 1
+  - platform: template
+    id: gofree_run_24h
+    name: "${gofree_name_run_24h}"
+    unit_of_measurement: min
+    device_class: duration
+    state_class: measurement
+    accuracy_decimals: 1
+  - platform: template
+    id: gofree_last_run
+    name: "${gofree_name_last_run}"
+    unit_of_measurement: s
+    device_class: duration
+    state_class: measurement
+    accuracy_decimals: 0
+
+# Polling: status every 5 s, faults every 30 s, history every 5 min, settings every hour.
+interval:
+  - interval: 15s
+    then:
+      - lambda: |-
+          const bool ok = id(gofree_last_rx) != 0 && millis() - id(gofree_last_rx) < 60000;
+          if (!id(gofree_link).has_state() || id(gofree_link).state != ok) id(gofree_link).publish_state(ok);
+  - interval: 5s
+    then:
+      - ble_client.ble_write:
+          id: gofree_client
+          service_uuid: fe5d
+          characteristic_uuid: 859cffd1-036e-432a-aa28-1a0085b87ba9
+          value: !lambda return gofree::read_obj(91, 164);
+  - interval: 30s
+    then:
+      - delay: 1s
+      - ble_client.ble_write:
+          id: gofree_client
+          service_uuid: fe5d
+          characteristic_uuid: 859cffd1-036e-432a-aa28-1a0085b87ba9
+          value: !lambda return gofree::read_obj(88, 25);
+  - interval: 60min
+    then:
+      - script.execute: gofree_read_settings
+  - interval: 5min
+    then:
+      - delay: 2s
+      - ble_client.ble_write:
+          id: gofree_client
+          service_uuid: fe5d
+          characteristic_uuid: 859cffd1-036e-432a-aa28-1a0085b87ba9
+          value: !lambda return gofree::read_obj(93, 1);
+
+binary_sensor:
+  - platform: template
+    id: gofree_link
+    name: "${gofree_name_link}"
+    device_class: connectivity
+    entity_category: diagnostic
+  - platform: template
+    id: gofree_running
+    name: "${gofree_name_running}"
+    device_class: running
+  - platform: template
+    id: gofree_demand
+    name: "${gofree_name_demand}"
+    icon: mdi:water-alert
+  - platform: template
+    id: gofree_pressure
+    name: "${gofree_name_pressure}"
+    icon: mdi:gauge
+  - platform: template
+    id: gofree_flow
+    name: "${gofree_name_flow}"
+    icon: mdi:waves-arrow-right
+  - platform: template
+    id: gofree_priming
+    name: "${gofree_name_priming}"
+    entity_category: diagnostic
+  - platform: template
+    id: gofree_in_alarm
+    name: "${gofree_name_in_alarm}"
+    device_class: problem
+  - platform: template
+    id: gofree_ext_stop
+    name: "${gofree_name_ext_stop}"
+    entity_category: diagnostic
+  - platform: template
+    id: gofree_available
+    name: "${gofree_name_available}"
+    entity_category: diagnostic
+  - platform: template
+    id: gofree_button
+    name: "${gofree_name_button}"
+    entity_category: diagnostic
+  - platform: template
+    id: gofree_stopped_cmd
+    internal: true
+
+text_sensor:
+  - platform: template
+    id: gofree_alarm
+    name: "${gofree_name_alarm}"
+    icon: mdi:alert
+  - platform: template
+    id: gofree_warning
+    name: "${gofree_name_warning}"
+    icon: mdi:alert-outline
+  - platform: template
+    id: gofree_alarm_text
+    name: "${gofree_name_alarm_text}"
+    icon: mdi:alert-circle-outline
+  - platform: template
+    id: gofree_adv
+    name: "${gofree_name_adv}"
+    entity_category: diagnostic
+  - platform: template
+    id: gofree_dryrun_cfg
+    name: "${gofree_name_dryrun_cfg}"
+    entity_category: diagnostic
+  - platform: template
+    id: gofree_extin_cfg
+    name: "${gofree_name_extin_cfg}"
+    entity_category: diagnostic
+  - platform: template
+    id: gofree_seen
+    name: "${gofree_name_seen}"
+    icon: mdi:bluetooth-audio
+    entity_category: diagnostic
+  - platform: template
+    id: gofree_status_bytes
+    name: "${gofree_name_status_bytes}"
+    entity_category: diagnostic
+
+switch:
+  # Turn off to let the official app connect (the pump accepts one connection at a time).
+  - platform: ble_client
+    ble_client_id: gofree_client
+    name: "${gofree_name_bt_switch}"
+    restore_mode: RESTORE_DEFAULT_ON
+    entity_category: config
+
+  # On = automatic (starts when pressure drops). Off = stopped, even if pressure drops.
+  - platform: template
+    name: "${gofree_name_enabled}"
+    icon: mdi:water-pump
+    lambda: |-
+      if (!id(gofree_stopped_cmd).has_state()) return {};
+      return !id(gofree_stopped_cmd).state;
+    turn_on_action:
+      - ble_client.ble_write:
+          id: gofree_client
+          service_uuid: fe5d
+          characteristic_uuid: 859cffd1-036e-432a-aa28-1a0085b87ba9
+          value: !lambda return gofree::command(6);
+    turn_off_action:
+      - ble_client.ble_write:
+          id: gofree_client
+          service_uuid: fe5d
+          characteristic_uuid: 859cffd1-036e-432a-aa28-1a0085b87ba9
+          value: !lambda return gofree::command(5);
+
+button:
+  - platform: template
+    name: "${gofree_name_reset_alarm}"
+    icon: mdi:alert-remove
+    on_press:
+      - ble_client.ble_write:
+          id: gofree_client
+          service_uuid: fe5d
+          characteristic_uuid: 859cffd1-036e-432a-aa28-1a0085b87ba9
+          value: !lambda return gofree::command(2);
+  # Unpair and forget the pump; GoFree then looks for a pump again (press its blue button).
+  - platform: template
+    name: "${gofree_name_forget}"
+    icon: mdi:link-variant-off
+    entity_category: config
+    on_press:
+      - lambda: |-
+          if (id(gofree_addr)) gofree::forget(id(gofree_addr));
+          id(gofree_addr) = 0;
+          global_preferences->sync();
+      - delay: 1s
+      - lambda: App.safe_reboot();
